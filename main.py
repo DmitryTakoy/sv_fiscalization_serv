@@ -1,5 +1,5 @@
 import json
-from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi import FastAPI, Request, Depends, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -13,6 +13,8 @@ import codecs
 from datetime import datetime
 import os
 from dotenv import load_dotenv
+import qrcode
+from io import BytesIO
 
 from models import Base, WebhookLog, FiscalizationLog, QRCodeLog
 from database import engine, get_db
@@ -301,3 +303,45 @@ async def index(request: Request, db: Session = Depends(get_db)):
         "webhook_logs": readable_webhook_logs,
         "fiscalization_logs": fiscalization_logs
     })
+
+@app.get("/fiscalization/check")
+async def get_receipt_qr(serial: str, db: Session = Depends(get_db)):
+    """Get QR code image for a receipt by serial number."""
+    try:
+        # Find QR code in database
+        qr_record = db.query(QRCodeLog).filter(QRCodeLog.serial_number == serial).first()
+        
+        if not qr_record:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "Receipt not found for the given serial number"}
+            )
+        
+        # Generate QR code image
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(qr_record.qr_string)
+        qr.make(fit=True)
+
+        # Create image
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Save image to bytes
+        img_bytes = BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        
+        return Response(
+            content=img_bytes.getvalue(),
+            media_type="image/png"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating QR code: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
