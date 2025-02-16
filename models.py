@@ -24,4 +24,12 @@ class FiscalizationLog(Base):
     status = Column(String)  # success/failed
     payload = Column(JSON)
     fiscal_receipt = Column(JSON)  # Store the formatted receipt data
-    error_message = Column(String, nullable=True) 
+    error_message = Column(String, nullable=True)
+
+class QRCodeLog(Base):
+    __tablename__ = "qr_code_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    serial_number = Column(String, unique=True, index=True)  # Unique constraint ensures one record per device
+    qr_string = Column(String)  # The formatted QR code string
+    timestamp = Column(DateTime, default=datetime.utcnow) 

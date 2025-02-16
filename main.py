@@ -14,7 +14,7 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 
-from models import Base, WebhookLog, FiscalizationLog
+from models import Base, WebhookLog, FiscalizationLog, QRCodeLog
 from database import engine, get_db
 
 # Load environment variables
@@ -204,6 +204,22 @@ def verify_signature(payload: Dict, signature: str) -> bool:
 #         logger.error(f"Error processing webhook: {str(e)}", exc_info=True)
 #         raise
 
+def generate_qr_string(fiscal_data: Dict) -> str:
+    """Generate QR code string from fiscal data."""
+    orange_data = fiscal_data.get("orangedataCheck", {})
+    
+    # Extract required fields
+    receipt_number = orange_data.get("i")
+    amount = orange_data.get("s")
+    timestamp = orange_data.get("t")
+    fiscal_number = orange_data.get("fn")
+    fiscal_sign = orange_data.get("fp")
+    
+    # Format QR string according to the template
+    qr_string = f"v=1&t={timestamp}&s={amount}&fn={fiscal_number}&i={receipt_number}&fp={fiscal_sign}&n=1"
+    
+    return qr_string
+
 @app.post("/fiscalization")
 async def fiscalization(request: Request, db: Session = Depends(get_db)):
     try:
@@ -218,6 +234,7 @@ async def fiscalization(request: Request, db: Session = Depends(get_db)):
         # Extract key information
         sale_id = payload.get("saleId")
         status = payload.get("fiscalizationStatus")
+        serial_number = payload.get("serialNumber")
         
         # Prepare fiscal receipt data if successful
         fiscal_receipt = None
@@ -232,6 +249,21 @@ async def fiscalization(request: Request, db: Session = Depends(get_db)):
                 "fiscal_number": orange_data.get("fn"),  # номер ФН
                 "fiscal_document": orange_data.get("fp")  # ФП документа
             }
+            
+            # Generate and store QR code string
+            qr_string = generate_qr_string(fiscal_data)
+            
+            # Update or create QR code record
+            existing_qr = db.query(QRCodeLog).filter(QRCodeLog.serial_number == serial_number).first()
+            if existing_qr:
+                existing_qr.qr_string = qr_string
+                existing_qr.timestamp = datetime.utcnow()
+            else:
+                qr_log = QRCodeLog(
+                    serial_number=serial_number,
+                    qr_string=qr_string
+                )
+                db.add(qr_log)
         
         # Create fiscalization log
         log = FiscalizationLog(
