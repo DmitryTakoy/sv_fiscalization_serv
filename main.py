@@ -305,16 +305,42 @@ async def index(request: Request, db: Session = Depends(get_db)):
     })
 
 @app.get("/fiscalization/check")
-async def get_receipt_qr(serial: str, db: Session = Depends(get_db)):
-    """Get QR code image for a receipt by serial number."""
+async def get_receipt_qr(
+    request: Request,
+    serial: str, 
+    format: str = "html",
+    db: Session = Depends(get_db)
+):
+    """
+    Get receipt QR code and information.
+    format: 'html' for web page, 'image' for raw QR code image
+    """
     try:
-        # Find QR code in database
+        # Find QR code and receipt in database
         qr_record = db.query(QRCodeLog).filter(QRCodeLog.serial_number == serial).first()
         
         if not qr_record:
             raise HTTPException(
                 status_code=404,
                 detail={"error": "Receipt not found for the given serial number"}
+            )
+        
+        # Find the latest fiscalization log for this serial number
+        fiscal_log = db.query(FiscalizationLog).filter(
+            FiscalizationLog.status == 'success'
+        ).order_by(FiscalizationLog.timestamp.desc()).all()
+        
+        # Find matching fiscal log by checking serialNumber in payload
+        matching_log = None
+        for log in fiscal_log:
+            if log.payload.get('serialNumber') == serial:
+                matching_log = log
+                break
+        
+        if not matching_log or not matching_log.fiscal_receipt:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "Receipt details not found"}
             )
         
         # Generate QR code image
@@ -326,22 +352,41 @@ async def get_receipt_qr(serial: str, db: Session = Depends(get_db)):
         )
         qr.add_data(qr_record.qr_string)
         qr.make(fit=True)
-
-        # Create image
         img = qr.make_image(fill_color="black", back_color="white")
         
-        # Save image to bytes
+        # If format is image, return raw PNG
+        if format.lower() == 'image':
+            img_bytes = BytesIO()
+            img.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            return Response(
+                content=img_bytes.getvalue(),
+                media_type="image/png"
+            )
+        
+        # For HTML format, prepare template data
         img_bytes = BytesIO()
         img.save(img_bytes, format='PNG')
         img_bytes.seek(0)
+        qr_base64 = base64.b64encode(img_bytes.getvalue()).decode()
         
-        return Response(
-            content=img_bytes.getvalue(),
-            media_type="image/png"
+        # Parse timestamp
+        timestamp = matching_log.fiscal_receipt['timestamp']  # Format: YYYYMMDDTHHMM
+        date_obj = datetime.strptime(timestamp, '%Y%m%dT%H%M')
+        formatted_date = date_obj.strftime('%Y-%m-%d %H:%M')
+        
+        return templates.TemplateResponse(
+            "receipt.html",
+            {
+                "request": request,
+                "qr_base64": qr_base64,
+                "receipt": matching_log.fiscal_receipt,
+                "formatted_date": formatted_date
+            }
         )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error generating QR code: {str(e)}", exc_info=True)
+        logger.error(f"Error generating receipt: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
